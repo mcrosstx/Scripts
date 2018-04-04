@@ -1,31 +1,54 @@
 ﻿<#
     .SYNOPSIS
-        Takes in the names of 2 Azure NVAs and fails over any user defined routing from one to the other.
+        Using the names of 2 Network Virtual Appliances in Azure, this script will find all User Defined Routes and swap them to point from one to the other.
 
     .DESCRIPTION
+        Process Flow:
+            Get NVA VMs
+            Get NICs for each NVA
+            Get IPs for each NIC
+            Confirm that each pair of NICs for the Primary & Secondary are on the same subnet
+            Get the UDR for each subnet
+            Check all UDR routes that point to the Primary NVA and swap them to point to the secondary NVA
+            Write the changes to the UDR
     
     .NOTES
-    .
+        Author: Michael Cross
+        Date: April 2018
+        URL: https://github.com/mcrosstx/Scripts/blob/master/Swap-UDR.ps1
 
+        Assumptions:
+            -NVAs and NICs must be in the same Resource Group
+            -NVAs must have the same number of NICs
+            -NICs should be in the same order on each NVA
+            -NICs should only have a single IP configuration
+    
+    .PARAMETER PrimaryNVAName
+        This is the name of the VM in Azure hosting the NVA that currently has traffic routed through it
+
+    .PARAMETER SecondaryNVAName
+        This is the name of the VM in Azure hosting the NVA that we want to fail traffic over to route through
+
+    .PARAMETER NVAResourceGroup
+        This is the Name of the Resource Group that contains the NVAs
 #>
 
 param(
     [Parameter(Mandatory=$True)]
-    [string]$PrimaryFWName,#="TestingUDRVM",
+    [string]$PrimaryNVAName,
     [Parameter(Mandatory=$True)]
-    [string]$SecondaryFWName,#="TestingUDRVM2",
+    [string]$SecondaryNVAName,
     [Parameter(Mandatory=$True)]
-    [string]$FWResourceGroup#="Testing"
+    [string]$NVAResourceGroup
 )
 
 # Get VMs from provided information
-#Measure-Command {
-$PrimaryFW = Get-AzureRMVM -ResourceGroup $FWResourceGroup -Name $PrimaryFWName
-$SecondaryFW = Get-AzureRMVM -ResourceGroup $FWResourceGroup -Name $SecondaryFWName
+$PrimaryNVA = Get-AzureRMVM -ResourceGroup $NVAResourceGroup -Name $PrimaryNVAName
+$SecondaryNVA = Get-AzureRMVM -ResourceGroup $NVAResourceGroup -Name $SecondaryNVAName
 
-# Check the PrimaryFW for number of NICs and use this to limit loops
-If ($PrimaryFW.NetworkProfile.NetworkInterfaces.Count -eq $SecondaryFW.NetworkProfile.NetworkInterfaces.Count){
-    $NICLimit = $PrimaryFW.NetworkProfile.NetworkInterfaces.Count
+# Check the PrimaryNVA for number of NICs and use this to limit loops
+If ($PrimaryNVA.NetworkProfile.NetworkInterfaces.Count -eq $SecondaryNVA.NetworkProfile.NetworkInterfaces.Count){
+    $NICLimit = $PrimaryNVA.NetworkProfile.NetworkInterfaces.Count
 }
 else{
     Write-Verbose "Number of NICs is unequal between Primary and Secondary Firewalls. Stopping script execution"
@@ -33,44 +56,46 @@ else{
 }
 
 # Initialize loop variables
-$PrimaryFWNIC = $null
-$SecondaryFWNIC = $null
+$PrimaryNVANIC = $null
+$SecondaryNVANIC = $null
 $RouteTable = $null
 
 # Begin looping through NICs to swap routing
 For ($i=0;$i -lt $NICLimit;$i++) {
     # Get NICs
-    $PrimaryFWNIC = Get-AzureRmNetworkInterface -Name ($PrimaryFW.NetworkProfile.NetworkInterfaces[$i].Id).Split("/")[-1] -ResourceGroupName $FWResourceGroup
-    $SecondaryFWNIC = Get-AzureRmNetworkInterface -Name ($SecondaryFW.NetworkProfile.NetworkInterfaces[$i].Id).Split("/")[-1] -ResourceGroupName $FWResourceGroup
-    $PrimaryFWIP = $PrimaryFWNIC.IpConfigurations[0].PrivateIpAddress
-    $SecondaryFWIP = $SecondaryFWNIC.IpConfigurations[0].PrivateIpAddress
+    $PrimaryNVANIC = Get-AzureRmNetworkInterface -Name ($PrimaryNVA.NetworkProfile.NetworkInterfaces[$i].Id).Split("/")[-1] -ResourceGroupName $NVAResourceGroup
+    $SecondaryNVANIC = Get-AzureRmNetworkInterface -Name ($SecondaryNVA.NetworkProfile.NetworkInterfaces[$i].Id).Split("/")[-1] -ResourceGroupName $NVAResourceGroup
+    $PrimaryNVAIP = $PrimaryNVANIC.IpConfigurations[0].PrivateIpAddress
+    $SecondaryNVAIP = $SecondaryNVANIC.IpConfigurations[0].PrivateIpAddress
 
     # Get VNet and Subnets
-    $Psubnetsplit = ($PrimaryFWNIC.IpConfigurations[0].subnet.Id).Split("/")
-    $Ssubnetsplit = ($SecondaryFWNIC.IpConfigurations[0].subnet.Id).Split("/")
+    $Psubnetsplit = ($PrimaryNVANIC.IpConfigurations[0].subnet.Id).Split("/")
+    $Ssubnetsplit = ($SecondaryNVANIC.IpConfigurations[0].subnet.Id).Split("/")
     $VirtualNetwork = Get-AzureRmVirtualNetwork -Name $Psubnetsplit[-3] -ResourceGroupName $Psubnetsplit[4]
-    $PrimaryFWSubnet = Get-AzureRmVirtualNetworkSubnetConfig -VirtualNetwork $VirtualNetwork  -Name $Psubnetsplit[-1]
-    $SecondaryFWSubnet = Get-AzureRmVirtualNetworkSubnetConfig -VirtualNetwork $VirtualNetwork  -Name $Ssubnetsplit[-1]
+    $PrimaryNVASubnet = Get-AzureRmVirtualNetworkSubnetConfig -VirtualNetwork $VirtualNetwork  -Name $Psubnetsplit[-1]
+    $SecondaryNVASubnet = Get-AzureRmVirtualNetworkSubnetConfig -VirtualNetwork $VirtualNetwork  -Name $Ssubnetsplit[-1]
     
     # Confirm Primary and Secondary NICs are in the same subnet
-    If ($PrimaryFWSubnet.Id -eq $SecondaryFWSubnet.Id) {
-        Write-Verbose $PrimaryFWSubnet.Name
+    If ($PrimaryNVASubnet.Id -eq $SecondaryNVASubnet.Id) {
+        Write-Verbose $PrimaryNVASubnet.Name
         # Get Route Table information
-        $RTSplit = $PrimaryFWSubnet.RouteTable.id.Split("/")
+        $RTSplit = $PrimaryNVASubnet.RouteTable.id.Split("/")
         $RouteTable = Get-AzureRmRouteTable -ResourceGroupName $RTSplit[4] -Name $RTSplit[-1]
         # Check all Routes and update as appropriate
-        #$Routes = $RouteTable.Routes
         Write-Verbose "$($RouteTable.Name) is being updated:"
         Foreach ($Route in $($RouteTable.Routes)){
+            # Skipping any /32 routes
             If (($Route.AddressPrefix.Split("/"))[-1] -eq "32"){
                 Write-Verbose "Skipping /32 Route: $($Route.Name)"
                 continue
             }
-            elseif ($Route.NextHopIpAddress -eq $PrimaryFWIP) {
-                Set-AzureRmRouteConfig -RouteTable $RouteTable -Name $Route.Name -AddressPrefix $Route.AddressPrefix -NextHopType $Route.NextHopType -NextHopIpAddress $SecondaryFWIP | Out-Null
-                Write-Verbose "$($Route.Name) Route NextHopIP switched to $SecondaryFWIP"
+            # Confirming we are only changing routes that are currently routing through the Primary Firewall
+            elseif ($Route.NextHopIpAddress -eq $PrimaryNVAIP) {
+                Set-AzureRmRouteConfig -RouteTable $RouteTable -Name $Route.Name -AddressPrefix $Route.AddressPrefix -NextHopType $Route.NextHopType -NextHopIpAddress $SecondaryNVAIP | Out-Null
+                Write-Verbose "$($Route.Name) Route NextHopIP switched to $SecondaryNVAIP"
             }
         }
+        # Updating the Route Table with the changed routes
         Set-AzureRmRouteTable -RouteTable $RouteTable | Out-Null
         Write-Verbose "$($RouteTable.Name) Update Complete"
     }
@@ -79,12 +104,3 @@ For ($i=0;$i -lt $NICLimit;$i++) {
         continue
     }
 }
-#} #Measure
-
-
-
-
-#set-azurermrouteconfig -RouteTable $RouteTables[0] -Name FWRoute -NextHopIpAddress "192.168.44.4" -AddressPrefix "0.0.0.0/0" -NextHopType VirtualAppliance
-#set-azurermroutetable -RouteTable $RouteTables[0]
-
-
