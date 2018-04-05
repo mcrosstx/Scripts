@@ -31,7 +31,11 @@
 
     .PARAMETER NVAResourceGroup
         This is the Name of the Resource Group that contains the NVAs
+    
+    
 #>
+
+[cmdletbinding(SupportsShouldProcess=$True)]
 
 param(
     [Parameter(Mandatory=$True)]
@@ -91,12 +95,16 @@ For ($i=0;$i -lt $NICLimit;$i++) {
             }
             # Confirming we are only changing routes that are currently routing through the Primary Firewall
             elseif ($Route.NextHopIpAddress -eq $PrimaryNVAIP) {
-                Set-AzureRmRouteConfig -RouteTable $RouteTable -Name $Route.Name -AddressPrefix $Route.AddressPrefix -NextHopType $Route.NextHopType -NextHopIpAddress $SecondaryNVAIP | Out-Null
+                if ($PSCmdlet.ShouldProcess($Route.Name,"Update")){
+                    Set-AzureRmRouteConfig -RouteTable $RouteTable -Name $Route.Name -AddressPrefix $Route.AddressPrefix -NextHopType $Route.NextHopType -NextHopIpAddress $SecondaryNVAIP | Out-Null
+                }
                 Write-Verbose "$($Route.Name) Route NextHopIP switched to $SecondaryNVAIP"
             }
         }
         # Updating the Route Table with the changed routes
-        Set-AzureRmRouteTable -RouteTable $RouteTable | Out-Null
+        if ($PSCmdlet.ShouldProcess($RouteTable.Name,"Update")){
+            Set-AzureRmRouteTable -RouteTable $RouteTable | Out-Null
+        }
         Write-Verbose "$($RouteTable.Name) Update Complete"
     }
     else {
