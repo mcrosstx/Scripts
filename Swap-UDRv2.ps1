@@ -8,8 +8,9 @@
             Get NICs for each NVA
             Get IPs for each NIC
             Confirm that each pair of NICs for the Primary & Secondary are on the same subnet
-            Get the UDR for each subnet
-            Check all UDR routes that point to the Primary NVA and swap them to point to the secondary NVA
+            Store NICSet Info and VNet Peering Info
+            Iterate through all discovered Subscriptions to update Route Tables
+            Check all UDR routes that point to one of Primary NVA's IPs and swap them to point to the corresponding Secondary NVA's IP
             Write the changes to the UDR
     
     .NOTES
@@ -22,6 +23,7 @@
             -NVAs must have the same number of NICs
             -NICs should be in the same order on each NVA
             -NICs should only have a single IP configuration
+            -User is already logged into Azure and has selected the Azure Subscription with the NVAs in it.
     
     .PARAMETER PrimaryNVAName
         This is the name of the VM in Azure hosting the NVA that currently has traffic routed through it
